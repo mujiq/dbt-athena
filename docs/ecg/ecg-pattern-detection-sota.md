@@ -254,8 +254,12 @@ Included only to ground the "production use" axis; **do not treat as adoptable O
    and survival heads from the prognosis references.
 6. **Reduced-lead robustness:** borrow **ISIBrno/DeepPSP** thresholding + multi-lead training.
 
-A practical note for this repo: it is a **dbt-athena** project. dbt models on S3/Athena can produce the
-curated cohort/label tables (Parquet in S3); the TF/Keras code reads those. The ML lives outside dbt.
+Orchestration note: the ECG/ML pipeline **does not depend on dbt**. Use **Dagster** as the open-source
+orchestrator — its software-defined **assets** provide dbt-like lineage for the curated cohort/label
+tables *and* orchestrate the Python TF/Keras training/eval steps in one tool, with native S3 integration.
+For heavy distributed/GPU training, **Flyte** or **Metaflow** are acceptable; **Prefect** is the
+lightweight fallback. Data may live in S3 (with AWS Athena as an optional query layer), but lineage and
+orchestration come from Dagster, not dbt.
 
 ---
 
@@ -290,8 +294,12 @@ curated cohort/label tables (Parquet in S3); the TF/Keras code reads those. The 
    bootstrap CIs; **separate internal vs external/OOD reporting**.
 8. **Explainability** — Grad-CAM/saliency over the waveform, attention maps, SHAP; map attributions back to
    P-QRS-T morphology for clinical review.
-9. **Serving** — SavedModel export; batch inference over S3/Athena-curated cohorts; experiment tracking
-   (MLflow / W&B); model + data + license manifest per run.
+9. **Serving** — SavedModel export; batch inference over S3-curated cohorts (Athena optional as a query
+   layer); experiment tracking (MLflow / W&B); model + data + license manifest per run.
+10. **Orchestration** — **Dagster** software-defined assets cover the whole DAG: raw ECG ingestion →
+    curated cohort/label tables → preprocessing → training → evaluation → registered model, with
+    asset-level lineage (the dbt-replacement). Flyte/Metaflow for distributed GPU training; Prefect as a
+    lightweight fallback. **No dbt dependency.**
 
 ---
 
@@ -299,7 +307,7 @@ curated cohort/label tables (Parquet in S3); the TF/Keras code reads those. The 
 
 | Phase | Deliverable | Datasets | Exit criterion |
 | --- | --- | --- | --- |
-| 0 | Data pipeline + EDA; data/license manifest | PTB-XL, CODE | Patient-level loaders verified |
+| 0 | Dagster asset pipeline + EDA; data/license manifest | PTB-XL, CODE | Patient-level loaders verified |
 | 1 | Keras baselines (Ribeiro ResNet + PTB-XL protocol) | PTB-XL, CODE | Macro-AUROC ≈ published; reproducible |
 | 2 | Transformer & S4D variants + explainability | PTB-XL, CPSC, Chapman | Match/beat baseline; OOD report |
 | 3 | Adopt foundation backbone (ECG-FM/ECGFounder) + own SSL | MIMIC-IV-ECG | Fine-tune > from-scratch |
