@@ -258,8 +258,9 @@ Orchestration note: the ECG/ML pipeline **does not depend on dbt**. Use **Dagste
 orchestrator — its software-defined **assets** provide dbt-like lineage for the curated cohort/label
 tables *and* orchestrate the Python TF/Keras training/eval steps in one tool, with native S3 integration.
 For heavy distributed/GPU training, **Flyte** or **Metaflow** are acceptable; **Prefect** is the
-lightweight fallback. Data may live in S3 (with AWS Athena as an optional query layer), but lineage and
-orchestration come from Dagster, not dbt.
+lightweight fallback. Data lives in S3-compatible object storage (in-cluster **OpenShift Data
+Foundation / NooBaa** on-prem, or AWS S3 on ROSA), with **Trino** as the optional open-source query
+layer (the engine Athena is built on); lineage and orchestration come from Dagster, not dbt.
 
 ---
 
@@ -294,8 +295,9 @@ orchestration come from Dagster, not dbt.
    bootstrap CIs; **separate internal vs external/OOD reporting**.
 8. **Explainability** — Grad-CAM/saliency over the waveform, attention maps, SHAP; map attributions back to
    P-QRS-T morphology for clinical review.
-9. **Serving** — SavedModel export; batch inference over S3-curated cohorts (Athena optional as a query
-   layer); experiment tracking (MLflow / W&B); model + data + license manifest per run.
+9. **Serving** — SavedModel export served via **KServe** (RHOAI) or Triton; batch inference over
+   S3-curated cohorts (Trino optional as a query layer); experiment tracking (MLflow / W&B); model +
+   data + license manifest per run.
 10. **Orchestration** — **Dagster** software-defined assets cover the whole DAG: raw ECG ingestion →
     curated cohort/label tables → preprocessing → training → evaluation → registered model, with
     asset-level lineage (the dbt-replacement). Flyte/Metaflow for distributed GPU training; Prefect as a
@@ -329,7 +331,65 @@ orchestration come from Dagster, not dbt.
 
 ---
 
-## 11. References (public sources)
+## 11. OpenShift deployment assessment
+
+**Target environment (confirmed 2026-06-23):** on-prem / self-managed OpenShift, GPU nodes available
+in-cluster, **Red Hat OpenShift AI (RHOAI)** available.
+
+**Verdict:** the stack is **appropriate for OpenShift**, with three required adjustments:
+(1) drop AWS Athena (replace with in-cluster Trino + ODF S3); (2) decide Dagster vs RHOAI Data Science
+Pipelines (support trade-off below); (3) plan for restricted egress (mirror datasets + model weights).
+TF/Keras, GPU training, and KServe serving map cleanly onto RHOAI.
+
+### 11.1 Component-by-component fit
+
+| Component | OpenShift fit | Action / notes |
+| --- | --- | --- |
+| TensorFlow / Keras | Good | Containerize on **UBI9 + CUDA** or use RHOAI TF workbench images; must run rootless (see SCC) |
+| GPU training | Good | **NVIDIA GPU Operator** + Node Feature Discovery (RHOAI prereq); distributed via Kubeflow **Training Operator** (TFJob, MultiWorkerMirroredStrategy) |
+| Dagster (orchestrator) | Workable | Official **Helm** chart; K8sRunLauncher + per-op pods. Not an RHOAI-supported component — see 11.3 |
+| AWS Athena | **Inappropriate on-prem** | Replace with **Trino** (open-source, the Athena engine) over S3/ODF; or Spark/DuckDB |
+| S3 object store | Good | **OpenShift Data Foundation (NooBaa / Ceph RGW)** provides S3 API on-prem |
+| Model serving | Good | **KServe** (RHOAI) for TF SavedModel, or **Triton** for multi-framework + GPU |
+| Experiment tracking | Good | Self-host **MLflow** (Deployment + Postgres + S3 artifact store on ODF). Prefer OSS MLflow over W&B |
+| Pipelines (alt) | Native | **RHOAI Data Science Pipelines** (Kubeflow/Tekton) is the Red Hat-supported pipeline engine |
+| Storage | Plan | Training data needs **RWX** (ODF CephFS) for multi-pod GPU jobs; checkpoints to S3/ODF |
+| Registry / build | Plan | UBI base images, S2I or Dockerfiles, push to internal registry or **Quay** |
+
+### 11.2 OpenShift-specific hardening (applies to every workload)
+
+- **Restricted SCC (`restricted-v2`):** containers run as an **arbitrary non-root UID**, no privileged
+  mode, dropped capabilities. Images must not assume a fixed UID, must be group-writable on needed paths
+  (group 0), and set `runAsNonRoot: true`. Many upstream CUDA/Dagster images need adjustment.
+- **GPU scheduling:** request `nvidia.com/gpu`; use node selectors/taints for GPU pools; MIG optional.
+- **Secrets:** S3/registry creds via OpenShift Secrets + **External Secrets Operator** or Vault.
+- **Networking:** NetworkPolicies between Dagster, Trino, MLflow, KServe, ODF; Routes/Ingress for UIs.
+
+### 11.3 Open decision — Dagster vs RHOAI Data Science Pipelines
+
+Project memory commits to **Dagster** (asset lineage + Python orchestration in one tool). On RHOAI the
+*natively supported* pipeline engine is **Data Science Pipelines (Kubeflow/Tekton)**. Two viable paths:
+
+- **Keep Dagster (recommended):** deploy via Helm with SCC hardening; use RHOAI only for GPU, KServe
+  serving, and workbenches. Pro: keeps the dbt-like asset lineage and one orchestration tool. Con:
+  Dagster itself is not Red Hat-supported (community-supported on the cluster).
+- **Switch to Data Science Pipelines:** fully Red Hat-supported, tighter RHOAI integration. Con: loses
+  Dagster's software-defined-asset lineage (the dbt replacement); more Kubeflow boilerplate.
+
+This revisits the orchestration decision, so it needs your call before we lock it. Default = keep Dagster.
+
+### 11.4 On-prem operational risks
+
+- **Restricted/air-gapped egress:** pulling PhysioNet datasets and HuggingFace weights (ECG-FM,
+  ECGFounder) may be blocked. Mirror datasets to ODS3 and model weights to **Quay / a model registry**;
+  load offline. Bake nothing license-restricted into images.
+- **License at deploy time:** **HuBERT-ECG (CC BY-NC)** cannot ship in a production/commercial image;
+  **PhysioNet credentialed** data cannot be redistributed in images. Enforce via the data/license manifest.
+- **Cluster sizing:** GPU memory + RWX throughput for ~1.5M-ECG SSL pretraining; plan ODF capacity.
+
+---
+
+## 12. References (public sources)
 
 Open-source models & code
 

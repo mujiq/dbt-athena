@@ -12,8 +12,21 @@ Spec lives at `docs/ecg/ecg-pattern-detection-sota.md`. Target ML stack: **Tenso
   training/eval pipeline in one tool, with first-class AWS (S3) integrations.
   - Heavy distributed/GPU training at scale: **Flyte** or **Metaflow** are acceptable alternatives.
   - Lightweight Pythonic flows: **Prefect** is the fallback.
-- Data may still live in S3 (and AWS Athena is fine as an optional query layer), but orchestration and
-  lineage come from Dagster, not dbt.
+- Data may still live in S3, but orchestration and lineage come from Dagster, not dbt.
+
+### Deployment target: OpenShift (on-prem / self-managed, in-cluster GPUs, RHOAI available)
+
+- **Do NOT use AWS Athena** on-prem. Use **Trino** (open-source, the engine behind Athena) over
+  S3-compatible storage. On-prem S3 = **OpenShift Data Foundation (NooBaa / Ceph RGW)**.
+- Use **RHOAI** for GPU (NVIDIA GPU Operator), model serving (**KServe**/Triton), and workbenches;
+  distributed TF training via the Kubeflow **Training Operator** (TFJob).
+- **Dagster runs via Helm** with restricted-SCC hardening (rootless, arbitrary UID). It is NOT a
+  Red Hat-supported RHOAI component — the supported pipeline engine is **Data Science Pipelines**
+  (Kubeflow/Tekton). Default is to keep Dagster; switching to DSP needs the user's call.
+- Plan for **restricted/air-gapped egress**: mirror PhysioNet datasets and HuggingFace model weights
+  into an internal registry/model store; never bake license-restricted assets (HuBERT-ECG CC BY-NC,
+  PhysioNet credentialed data) into images.
+- Full assessment in `docs/ecg/ecg-pattern-detection-sota.md` §11.
 
 ### Working agreement
 
